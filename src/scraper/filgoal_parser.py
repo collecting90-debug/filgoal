@@ -1,4 +1,3 @@
-
 """
 src/scraper/filgoal_parser.py
 ──────────────────────────────
@@ -56,24 +55,66 @@ def parse_article_list(
     subcategory: str,
     base_url: str = FILGOAL_BASE,
 ) -> list[RawArticle]:
-    """Parse the FilGoal articles listing page."""
+    """
+    Parse the FilGoal articles listing page.
+
+    Supports two card structures (FilGoal changed layout):
+
+    OLD (pre-2025):
+        <li>
+          <a href="/articles/ID/...">
+            <h6>Title</h6>
+            <p>Summary</p>
+            <span>Date</span>
+            <img data-src="..."/>
+          </a>
+        </li>
+
+    NEW (current):
+        <a href="/articles/ID/...">
+          <img class="lazy" data-src="..."/>
+          <span>Title</span>
+        </a>
+    """
     soup = BeautifulSoup(html, "lxml")
     articles: list[RawArticle] = []
 
+    # ── Selector cascade: try most-specific first ────────────────────────────
+    # 1. Old structure: li > a with h6 inside
     cards = soup.select("li a[href^='/articles/']")
+
+    # 2. New structure: any a with /articles/ and a span (title) or img inside
+    if not cards:
+        cards = [
+            a for a in soup.select("a[href^='/articles/']")
+            if a.select_one("span") or a.select_one("h6")
+        ]
+
+    # 3. Broader fallback: any a with /articles/ that has an img
+    if not cards:
+        cards = [
+            a for a in soup.select("a[href^='/articles/']")
+            if a.select_one("img")
+        ]
 
     if not cards:
         logger.warning(
-            f"No article cards found for subcategory={subcategory}"
+            f"No article cards found for subcategory={subcategory} — "
+            f"page may have changed structure or failed to load JS"
         )
         return []
 
+    # Deduplicate by URL to avoid processing same card twice
+    seen_hrefs: set[str] = set()
     for card in cards:
+        href = str(card.get("href", ""))
+        if href in seen_hrefs:
+            continue
+        seen_hrefs.add(href)
         try:
             article = _parse_card(card, subcategory, base_url)
             if article:
                 articles.append(article)
-
         except Exception as exc:
             logger.warning(f"Failed to parse article card: {exc}")
 
@@ -337,44 +378,45 @@ def _parse_card(
 ) -> Optional[RawArticle]:
 
     href = str(card.get("href", ""))
-
     if not href:
         return None
 
+    # Strip UTM params (e.g. ?utm_source=nativeads)
+    href = href.split("?")[0]
     url = _absolute_url(href, base_url)
 
-    title_tag = card.select_one("h6")
-
+    # ── Title: h6 (old) or span (new) ────────────────────────────────────────
+    title_tag = card.select_one("h6") or card.select_one("span")
     if not title_tag:
         return None
 
     title = title_tag.get_text(strip=True)
-
     if not title:
         return None
 
+    # ── Summary (old structure only — new structure has none) ─────────────────
     summary_tag = card.select_one("p")
-
     summary = (
         summary_tag.get_text(strip=True)[:500]
         if summary_tag
         else None
     )
 
-    date_tag = card.select_one("span")
+    # ── Date (old structure only) ─────────────────────────────────────────────
+    # Exclude the title span already found above
+    publish_date = None
+    for span in card.find_all("span"):
+        if span is title_tag:
+            continue
+        text = span.get_text(strip=True)
+        parsed = _parse_arabic_date(text)
+        if parsed:
+            publish_date = parsed
+            break
 
-    publish_date = (
-        _parse_arabic_date(
-            date_tag.get_text(strip=True)
-        )
-        if date_tag
-        else None
-    )
-
+    # ── Image ─────────────────────────────────────────────────────────────────
     image_url: Optional[str] = None
-
     img = card.select_one("img")
-
     if img:
         src = (
             img.get("data-src")
@@ -382,7 +424,6 @@ def _parse_card(
             or ""
         )
         src = str(src) if src else ""
-
         if src and "placeholder" not in src:
             image_url = _absolute_url(src, base_url)
 
@@ -446,4 +487,3 @@ def _absolute_url(href: str, base: str) -> str:
         return "https:" + href
 
     return urljoin(base, href)
-

@@ -18,9 +18,15 @@ from src.scraper.browser import BrowserManager
 from src.scraper.filgoal_parser import parse_article_detail, parse_article_list
 
 _CONTENT_READY_SELECTORS = [
-    "li a[href^='/articles/']",
-    "ul li a",
+    # New structure (current): bare <a> with /articles/ and span inside
+    "a[href*='/articles/'] span",
+    # Old structure: li > a > h6
+    "li a[href^='/articles/'] h6",
+    # Fallback: any article link
+    "a[href*='/articles/']",
+    # Generic fallbacks
     "article",
+    "ul li a",
 ]
 
 _CONTENT_WAIT_MS = 30_000
@@ -59,6 +65,18 @@ class FilGoalScraper:
 
         stubs = parse_article_list(listing_html, subcategory=name)
         new_stubs = [a for a in stubs if a.url not in self._seen_urls]
+
+        if not stubs:
+            # Diagnostic: log a snippet of the HTML to help debug selector issues
+            from bs4 import BeautifulSoup as _BS
+            _soup = _BS(listing_html, "lxml")
+            _body_text = _soup.get_text()[:200].replace("\n", " ").strip()
+            logger.warning(
+                f"Listing page returned 0 cards for '{name}'. "
+                f"Page length={len(listing_html)}, "
+                f"text preview: {_body_text!r}"
+            )
+
         logger.info(f"{len(new_stubs)} new articles in {name}")
 
         if not new_stubs:
