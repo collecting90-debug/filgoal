@@ -18,15 +18,9 @@ from src.scraper.browser import BrowserManager
 from src.scraper.filgoal_parser import parse_article_detail, parse_article_list
 
 _CONTENT_READY_SELECTORS = [
-    # New structure (current): bare <a> with /articles/ and span inside
-    "a[href*='/articles/'] span",
-    # Old structure: li > a > h6
-    "li a[href^='/articles/'] h6",
-    # Fallback: any article link
-    "a[href*='/articles/']",
-    # Generic fallbacks
-    "article",
+    "li a[href^='/articles/']",
     "ul li a",
+    "article",
 ]
 
 _CONTENT_WAIT_MS = 30_000
@@ -65,18 +59,6 @@ class FilGoalScraper:
 
         stubs = parse_article_list(listing_html, subcategory=name)
         new_stubs = [a for a in stubs if a.url not in self._seen_urls]
-
-        if not stubs:
-            # Diagnostic: log a snippet of the HTML to help debug selector issues
-            from bs4 import BeautifulSoup as _BS
-            _soup = _BS(listing_html, "lxml")
-            _body_text = _soup.get_text()[:200].replace("\n", " ").strip()
-            logger.warning(
-                f"Listing page returned 0 cards for '{name}'. "
-                f"Page length={len(listing_html)}, "
-                f"text preview: {_body_text!r}"
-            )
-
         logger.info(f"{len(new_stubs)} new articles in {name}")
 
         if not new_stubs:
@@ -175,7 +157,7 @@ class FilGoalScraper:
 
     # ── Article batch fetching ────────────────────────────────────────────────
 
-    async def _fetch_articles_batch(self, stubs: list[RawArticle], batch_size: int = 3) -> list[RawArticle]:
+    async def _fetch_articles_batch(self, stubs: list[RawArticle], batch_size: int = 2) -> list[RawArticle]:
         results: list[RawArticle] = []
 
         for i in range(0, len(stubs), batch_size):
@@ -195,8 +177,24 @@ class FilGoalScraper:
         return results
 
     async def _fetch_article_detail(self, stub: RawArticle) -> RawArticle:
+        """
+        Fetch the full article detail page and merge it into the stub.
+
+        If the detail page fails to load (e.g. browser/page crash) after all
+        retries, we do NOT silently publish the bare listing-page stub as if
+        it were complete — the listing card only has a short summary, not
+        the full article body. Instead we fall back to using the summary
+        as the content (clearly better than empty content) and log loudly
+        so this is visible in monitoring, rather than failing silently.
+        """
         html = await self._safe_load_page(stub.url, wait_for_content=False)
         if not html:
+            logger.warning(
+                f"Detail page failed to load after all retries — "
+                f"publishing with listing summary only (no full content): {stub.url}"
+            )
+            if stub.summary and not stub.content:
+                stub = stub.model_copy(update={"content": stub.summary})
             return stub
 
         return parse_article_detail(html, stub)
