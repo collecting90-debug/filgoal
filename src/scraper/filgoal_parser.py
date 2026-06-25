@@ -377,10 +377,11 @@ def _parse_card(
 
     if img:
         src = (
-            str(img.get("data-src"))
-            or str(img.get("src"))
+            img.get("data-src")
+            or img.get("src")
             or ""
         )
+        src = str(src) if src else ""
 
         if src and "placeholder" not in src:
             image_url = _absolute_url(src, base_url)

@@ -73,15 +73,18 @@ class RealTimeMonitor:
         # Seed seen URLs on startup (don't re-process existing articles)
         await self._seed_seen_urls()
 
-        while True:
-            try:
-                await self._poll_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error(f"Poll error: {exc}")
+        try:
+            while True:
+                try:
+                    await self._poll_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(f"Poll error: {exc}")
 
-            await asyncio.sleep(POLL_INTERVAL)
+                await asyncio.sleep(POLL_INTERVAL)
+        finally:
+            await self.stop()
 
     async def stop(self):
         await self._client.aclose()

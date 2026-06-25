@@ -96,11 +96,13 @@ class Watchdog:
         """Start and run the pipeline until it raises or shutdown is requested."""
         self._pipeline = ArticlePipeline(self._settings)
         await self._pipeline.start()
-        self._restart_count = 0   # reset on successful start
 
         try:
             pipeline_task = asyncio.create_task(self._pipeline.run_forever())
             shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+
+            # Only reset restart count once the pipeline is actually running
+            self._restart_count = 0
 
             done, pending = await asyncio.wait(
                 {pipeline_task, shutdown_task},
@@ -135,12 +137,17 @@ class Watchdog:
 
     def _install_signal_handlers(self) -> None:
         """Install SIGTERM / SIGINT handlers for graceful shutdown."""
-        loop = asyncio.get_event_loop()
+        if sys.platform == "win32":
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
 
         def _handle_signal(sig_name: str):
             logger.info(f"Received {sig_name} — initiating graceful shutdown")
             asyncio.create_task(self.shutdown())
 
-        if sys.platform != "win32":
-            loop.add_signal_handler(signal.SIGTERM, lambda: _handle_signal("SIGTERM"))
-            loop.add_signal_handler(signal.SIGINT, lambda: _handle_signal("SIGINT"))
+        loop.add_signal_handler(signal.SIGTERM, lambda: _handle_signal("SIGTERM"))
+        loop.add_signal_handler(signal.SIGINT, lambda: _handle_signal("SIGINT"))
