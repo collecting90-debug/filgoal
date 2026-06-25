@@ -197,10 +197,24 @@ class BrowserManager:
 
     async def _configure_page(self, page: Page) -> None:
         """Apply per-page performance and stealth settings."""
-        # Block only heavy media — don't block fonts/css as F5 may use them for fingerprinting
+        # Block heavy media (video/audio) — never needed for article scraping
         await page.route(
             "**/*.{mp4,webm,ogg,mp3,wav}",
             lambda route: route.abort(),
+        )
+        # Block known ad/analytics domains — these are the most common cause
+        # of renderer OOM crashes on FilGoal article pages (autoplay video ads,
+        # heavy tracking scripts). Blocking them does not affect article content.
+        _BLOCKED_DOMAINS = (
+            "doubleclick.net", "googlesyndication.com", "google-analytics.com",
+            "googletagmanager.com", "facebook.net", "taboola.com", "outbrain.com",
+            "adservice.google", "googleads.g.doubleclick.net",
+        )
+        await page.route(
+            "**/*",
+            lambda route: route.abort()
+            if any(d in route.request.url for d in _BLOCKED_DOMAINS)
+            else route.continue_(),
         )
         # Reasonable default timeout for all operations
         page.set_default_timeout(self._settings.page_load_timeout)
